@@ -53,19 +53,23 @@ def main(urlinit=""):
 	headers=hparsec(headers)
 	#print((headers["status"]))
 	if int(headers["status"]) is not 200:
-		s.close()
-		main(headers["location"])
+		try:
+			s.close()
+			main(headers["location"])
+		except:
+			print("We cant download from this URL Contact Admin with URL")
+			sys.exit(1)
 	else:
 		print("Downloading From: "+host)
 	f = open(filename, 'wb')
 	f.write(image)
 	global size
-	print(headers["content-length"])
+	#print(headers["content-length"])
 	try:
 		size=headers["content-length"]
-		print("Total Size {:.3f} MB".format(int(size)/1048576))
+		print("Total File Size {:.3f} MB".format(int(size)/1048576))
 	except:
-		print("No size")
+		print("No File size Given")
 	global gg
 	gg=len(image)
 	global when
@@ -82,6 +86,7 @@ def main(urlinit=""):
 	print("Process: [{}] {}% Complete {:<10}".format("█"*p+"-"*(50-p), p*100/50,"0.0 Kb/s"))
 	f.close()
 	print("\nDownloading Completed Filename:{}\n".format(filename))
-	os.system("pause")
 if __name__ == '__main__':
 	main()
+	print("")
+	input("Press Enter to exit")
