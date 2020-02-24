@@ -1,92 +1,113 @@
+# -*- coding: utf-8 -*-
+
+__author__ = 'Mayank Gupta'
+__version__ = '1.0a1'
+__license__ = 'License :: MIT License'
+
 import socket,select,re,ssl,threading,sys,os
 from urllib.parse import urlparse
 from time import sleep
 
-global temp1
-temp1=0
-def run():
-	global temp1
-	while when:
-		speed=(gg-temp1)/1024
-		p=int(int(gg)*50/int(size))
-		print("Process: [{}] {}% Complete {:<8}Kb/s".format("█"*p+"-"*(50-p), p*100/50,"{:.2f}".format(speed)),end="\r")
-		temp1=gg
-		sleep(1)
-def hparsec(data):
-	headers =  data.split(b'\r\n\r\n')[0]
-	html = data[len(headers)+4:]
-	headers=headers.decode().split("\r\n")
-	out={}
-	out["status"]=headers[0].split()[1]
-	for n in headers[1:]:
-		temp=n.split(":")
-		value=""
-		for n in temp[1:]:
-			value+=n+":"
-		out[temp[0].lower()]=value[1:len(value)-1]
-	return out
-def main(urlinit=""):
-	if not urlinit:
-		urlinit=input("Download Link -->")
-		#urlinit="http://www.panacherock.com/downloads/mp3/01_Sayso.mp3"
-	o=urlparse(urlinit)
-	if o.query:
-		url=(o.path+"?"+o.query)
-		filename=input("Enter Filename -->")
-	else:
-		url=o.path
-		filename=o.path.split("/")[-1]
-	host=o.netloc
-	send='GET {} HTTP/1.1\r\nHOST:{}\r\nConnection: close\r\nUser-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0 Safari/605.1.15\r\nAccept: */*\r\n\r\n'.format(url,host)
-	s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-	if o.scheme=="https":
-		s.connect((host, 443))
-		s = ssl.create_default_context().wrap_socket(s, server_hostname=host)
-	elif o.scheme=="http":
-		s.connect((host, 80))
-	else:
-		print("we only support HTTP and HTTPS")
-	s.sendall(send.encode("ascii"))
-	data = s.recv(1024)
-	headers =  data.split(b'\r\n\r\n')[0]
-	image = data[len(headers)+4:]
-	headers=hparsec(headers)
-	#print((headers["status"]))
-	if int(headers["status"]) is not 200:
+class download(object):
+	def __init__(self,url:str,name:str=None)->bool:
+		self.name=name
+		request=self.RawData(url)
+		self.sock=self.connect()
+		self.sock.sendall(request)
+		data=self.sock.recv(2048)
+		self.header,image=self.hparsec(data)
+		if int(self.header["status"]) is not 200:
+			try:
+				self.sock.close()
+				self.__init__(self.header["location"],name)
+			except:
+				print("We cant download from this URL Contact Admin with URL")
+				self.sock.close()
+				sys.exit(1)
+		else:
+			print("Downloading From: "+self.host)
+			return self.download(image)
+		
+	def download(self,image:bytes)-> bool:
+		if self.name:
+			f = open(self.name, 'wb')
+			self.filename=self.name
+		f = open(self.filename, 'wb')
+		f.write(image)
 		try:
-			s.close()
-			main(headers["location"])
+			self.size=self.header["content-length"]
+			print("Total File Size {:.3f} MB".format(int(self.size)/1048576))
 		except:
-			print("We cant download from this URL Contact Admin with URL")
+			print("No File size Given")
+		self.gg=len(image)
+		self.when=True
+		threading.Thread(target=self.run).start()
+		while True:
+			data = self.sock.recv(5120)
+			if not data: break
+			f.write(data)
+			self.gg+=len(data)
+		self.when=False
+		p=int(int(self.gg)*50/int(self.size))
+		print("Process: [{}] {}% Complete {:<10}".format("█"*p+"-"*(50-p), p*100/50,"0.0 Kb/s"))
+		f.close()
+		self.sock.close()
+		print("\nDownloading Completed Filename: {}\n".format(self.filename))
+		return True
+	def run(self):
+		self.temp1=0
+		while self.when:
+			speed=(self.gg-self.temp1)/1024
+			p=int(int(self.gg)*50/int(self.size))
+			print("Process: [{}] {}% Complete {:<8}Kb/s".format("█"*p+"-"*(50-p), p*100/50,"{:.2f}".format(speed)),end="\r")
+			self.temp1=self.gg
+			sleep(1)
+	def connect(self) -> socket:
+		s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		if self.protocol=="https":
+			s.connect((self.host, 443))
+			s = ssl.create_default_context().wrap_socket(s, server_hostname=self.host)
+		elif self.protocol=="http":
+			s.connect((self.host, 80))
+		else:
+			print("we only support HTTP and HTTPS")
+			s.close()
 			sys.exit(1)
-	else:
-		print("Downloading From: "+host)
-	f = open(filename, 'wb')
-	f.write(image)
-	global size
-	#print(headers["content-length"])
-	try:
-		size=headers["content-length"]
-		print("Total File Size {:.3f} MB".format(int(size)/1048576))
-	except:
-		print("No File size Given")
-	global gg
-	gg=len(image)
-	global when
+		return s
+	def hparsec(self,data:bytes) -> list:
+		header =  data.split(b'\r\n\r\n')[0]
+		store =  data[len(header)+4:]
+		html = data[len(header)+4:]
+		header=header.decode().split("\r\n")
+		out={}
+		out["status"]=header[0].split()[1]
+		for n in header[1:]:
+			temp=n.split(":")
+			value=""
+			for n in temp[1:]:
+				value+=n+":"
+			out[temp[0].lower()]=value[1:len(value)-1]
+		return out,store
+	def __url(self,url:str,host:str) -> bytes:
+		send='GET {} HTTP/1.1\r\nHOST:{}\r\nConnection: close\r\nUser-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0 Safari/605.1.15\r\nAccept: */*\r\n\r\n'.format(url,host)
+		return send.encode('ascii')
+	def RawData(self,web_url:str)->'bytes,str,int,str':
+		o=urlparse(web_url)
+		host=o.netloc
+		protocol=o.scheme
+		if o.query:
+			url=(o.path+"?"+o.query)
+			filename=input("Enter Filename -->")
+		else:
+			url=o.path
+			filename=o.path.split("/")[-1]
 
-	when=True
-	threading.Thread(target=run).start()
-	while True:
-	    data = s.recv(5120)
-	    if not data: break
-	    f.write(data)
-	    gg+=len(data)
-	when=False
-	p=int(int(gg)*50/int(size))
-	print("Process: [{}] {}% Complete {:<10}".format("█"*p+"-"*(50-p), p*100/50,"0.0 Kb/s"))
-	f.close()
-	print("\nDownloading Completed Filename:{}\n".format(filename))
+		request=self.__url(url,host)
+		self.filename=filename
+		self.protocol=protocol
+		self.host=host
+		return request
+
 if __name__ == '__main__':
-	main()
-	print("")
-	input("Press Enter to exit")
+	link=input("Enter Url -->")
+	download(link)
