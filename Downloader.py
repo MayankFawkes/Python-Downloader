@@ -107,7 +107,6 @@ class download(object):
 		self.protocol=protocol
 		self.host=host
 		return request
-
 if __name__ == '__main__':
 	link=input("Enter Url -->")
 	download(link)
