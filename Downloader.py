@@ -9,8 +9,9 @@ from urllib.parse import urlparse
 from time import sleep
 
 class download(object):
-	def __init__(self,url:str,name:str=None)->bool:
+	def __init__(self,url:str,name:str=None,status:bool=True)->None:
 		self.name=name
+		self.status=status
 		request=self.RawData(url)
 		self.sock=self.connect()
 		self.sock.sendall(request)
@@ -26,7 +27,7 @@ class download(object):
 				sys.exit(1)
 		else:
 			print("Downloading From: "+self.host)
-			return self.download(image)
+			self.download(image)
 		
 	def download(self,image:bytes)-> bool:
 		if self.name:
@@ -41,7 +42,7 @@ class download(object):
 			print("No File size Given")
 		self.gg=len(image)
 		self.when=True
-		threading.Thread(target=self.run).start()
+		if self.status:threading.Thread(target=self.run).start()
 		while True:
 			data = self.sock.recv(5120)
 			if not data: break
@@ -49,11 +50,12 @@ class download(object):
 			self.gg+=len(data)
 		self.when=False
 		p=int(int(self.gg)*50/int(self.size))
-		print("Process: [{}] {}% Complete {:<10}".format("█"*p+"-"*(50-p), p*100/50,"0.0 Kb/s"))
+		if self.status:print("Process: [{}] {}% Complete {:<10}".format("█"*p+"-"*(50-p), p*100/50,"0.0 Kb/s"))
 		f.close()
 		self.sock.close()
 		print("\nDownloading Completed Filename: {}\n".format(self.filename))
 		return True
+
 	def run(self):
 		self.temp1=0
 		while self.when:
@@ -62,6 +64,7 @@ class download(object):
 			print("Process: [{}] {}% Complete {:<8}Kb/s".format("█"*p+"-"*(50-p), p*100/50,"{:.2f}".format(speed)),end="\r")
 			self.temp1=self.gg
 			sleep(1)
+
 	def connect(self) -> socket:
 		s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		if self.protocol=="https":
@@ -74,6 +77,7 @@ class download(object):
 			s.close()
 			sys.exit(1)
 		return s
+
 	def hparsec(self,data:bytes) -> list:
 		header =  data.split(b'\r\n\r\n')[0]
 		store =  data[len(header)+4:]
@@ -88,9 +92,11 @@ class download(object):
 				value+=n+":"
 			out[temp[0].lower()]=value[1:len(value)-1]
 		return out,store
+
 	def __url(self,url:str,host:str) -> bytes:
 		send='GET {} HTTP/1.1\r\nHOST:{}\r\nConnection: close\r\nUser-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0 Safari/605.1.15\r\nAccept: */*\r\n\r\n'.format(url,host)
 		return send.encode('ascii')
+
 	def RawData(self,web_url:str)->'bytes,str,int,str':
 		o=urlparse(web_url)
 		host=o.netloc
@@ -101,12 +107,13 @@ class download(object):
 		else:
 			url=o.path
 			filename=o.path.split("/")[-1]
-
 		request=self.__url(url,host)
 		self.filename=filename
 		self.protocol=protocol
 		self.host=host
 		return request
+
 if __name__ == '__main__':
 	link=input("Enter Url -->")
-	download(link)
+	# link='https://storge.pic2.me/download/origin/257714.jpeg'
+	download(link,name=None,status=True)
