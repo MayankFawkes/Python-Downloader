@@ -26,7 +26,7 @@ class download(object):
 				self.sock.close()
 				sys.exit(1)
 		else:
-			print("Downloading From: "+self.host)
+			if self.status:print("Downloading From: "+self.host)
 			self.download(image)
 		
 	def download(self,image:bytes)-> bool:
@@ -37,9 +37,9 @@ class download(object):
 		f.write(image)
 		try:
 			self.size=self.header["content-length"]
-			print("Total File Size {:.3f} MB".format(int(self.size)/1048576))
+			if self.status:print("Total File Size {:.3f} MB".format(int(self.size)/1048576))
 		except:
-			print("No File size Given")
+			if self.status:print("No File size Given")
 		self.gg=len(image)
 		self.when=True
 		if self.status:threading.Thread(target=self.run).start()
@@ -53,7 +53,7 @@ class download(object):
 		if self.status:print("Process: [{}] {}% Complete {:<10}".format("█"*p+"-"*(50-p), p*100/50,"0.0 Kb/s"))
 		f.close()
 		self.sock.close()
-		print("\nDownloading Completed Filename: {}\n".format(self.filename))
+		if self.status:print("\nDownloading Completed Filename: {}\n".format(self.filename))
 		return True
 
 	def run(self):
