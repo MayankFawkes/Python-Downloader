@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 __author__ = 'Mayank Gupta'
-__version__ = '1.0a1'
+__version__ = '1.0a2'
 __license__ = 'License :: MIT License'
 
 import socket,select,re,ssl,threading,sys,os
@@ -21,8 +21,9 @@ class download(object):
 			try:
 				self.sock.close()
 				self.__init__(self.header["location"],name)
-			except:
-				print("We cant download from this URL Contact Admin with URL")
+			except as e:
+				print("We cant download from this URL Contact Admin with URL OR can't save with this file name")
+				print(f"Erroe: {e}")
 				self.sock.close()
 				sys.exit(1)
 		else:
