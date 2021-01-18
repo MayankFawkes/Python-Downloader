@@ -13,6 +13,8 @@ root@internet:~#python3 Downloader.py
 # Updates
 ## Nov 24 2020
 * Multi-connection downloading
+## Jan 18 2021
+* Minor bugs fix
 
 # You can Help:/
 <a href="https://www.buymeacoffee.com/MayankFawkes" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/default-blue.png" alt="Buy Me A Coffee" style="height: 51px !important;width: 217px !important;" ></a>
