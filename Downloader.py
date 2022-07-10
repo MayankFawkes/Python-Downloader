@@ -4,348 +4,285 @@ __author__ = 'Mayank Gupta'
 __version__ = '1.1'
 __license__ = 'License :: MIT License'
 
-from typing import Union, Callable
-from typing import List, Tuple
-from typing import Dict, Type
-from typing import Any, Optional
-import socket,select,re,ssl,threading,sys,os
-from urllib.parse import urlparse, unquote
-from time import sleep, time
-import tempfile, os, logging
-from select import select
-from random import randint
+import os, sys, socket, json
+import threading, ssl, select
+from datetime import datetime
+import time, re, tempfile
+from urllib.parse import unquote
+from itertools import cycle
 
-logg = logging.getLogger(__name__)
+MAX_SOCKET_CHUNK_SIZE = 16 * 1024
+MAX_IO_CHUNK_SIZE = 8 * 1024
 
-class Download(object):
-	'''
-	This :class:`Download <Download>` will download streams with multi-connections.
+MAX_CONNECTION = 16
+MANUAL_MAX_CONNECTION = 64
+CONNECTION_PER_BYTE = 1024 * 1024 * 5
 
-	:param str url: 
-		Pass the download link
-	:param str name: 
-		(optional) Pass the name of file name. 
-	:param str dire: 
-		(optional) Pass the dir for output file with excluding filename.
-	:param bool status: 
-		(optional) Pass if you want to enable process bar. **Default[False]**
-	:param int connection: 
-		(optional) Pass number is connection to be create. **Default[8]**
-	:param int chunk: 
-		(optional) Pass the chunk/buffer size for accepting packets. **Default[5120]**
+class Response:
+	def __init__(self, raw:bytes):
+		header_body = raw.split(b"\r\n\r\n")
 
-	:rtype: str
-	:returns: the file name
+		if len(header_body) == 1:
+			self.raw_header = header_body[0]
+		else:
+			self.raw_header, self.body = header_body
 
-	'''
-	def __init__(self,url:str,dire:str="",name:str="",status:bool=False,connection:int=8, chunk:int = 5120) -> None:
-		self.name = name.replace(" ","_")
-		self.dire = dire
-		if self.dire:
-			self.dire = self.create_user_dir(dire)
-			if self.dire[-1] == "/":
-				self.dire = self.dire[:-1]
-		self.status = status
-		self.chunk = chunk
+		header_split = self.raw_header.split(b"\r\n")
+		self.log = header_split[0]
+
+
+		log_split = self.log.decode().split(" ")
+		if len(log_split) == 3:
+			self.protocol, self.status, self.status_str = self.log.decode().split(" ")
+
+		if len(log_split) > 3:
+			self.protocol, self.status, self.status_str = log_split[0], log_split[1], " ".join(log_split[2:])
+
+		self.headers = self.make_header()
+
+		self.allow_multi_connection = False
+		self.filename = None
+		self.length = 0
+
+		if l:=self.headers.get("content-length"):
+			self.length = int(l)
+
+		if "accept-ranges" in self.headers:
+			self.allow_multi_connection = True
+
+		if disposition:=self.headers.get("content-disposition"):
+			groups = disposition.split(";")
+			for group in map(lambda x: x.strip(), groups):
+				sgroup = group.split("=")
+				if len(sgroup) == 2:
+					key, value = sgroup
+					setattr(self, key, value)
+
+	def __repr__(self):
+		return f"<{self.__class__.__name__} status={self.status} length={self.length}>"
+
+	def make_header(self):
+		raw_split = self.raw_header.split(b"\r\n")[1:]
+		_header = dict()
+		for line in raw_split:
+			if not line:
+				continue
+			broken_line = line.decode().split(":")
+			_header[broken_line[0].lower()] = ":".join(broken_line[1:]).strip()
+
+		return _header
+
+class Url:
+	def __init__(self, url:str):
+		# url = unquote(url)
+		search = re.search(r"(?P<scheme>\w+)://(?P<host>[\w\.-]+)(?P<path>.*)", url)
+
+		assert search, "Invalid url"
+
+		for key, value in search.groupdict().items():
+			setattr(self, key, value)
+
+		self.scheme = self.scheme.lower()
+
+		if self.scheme == "http":
+			self.port = 80
+
+		if self.scheme == "https":
+			self.port = 443
+
+
+class Worker(threading.Thread):
+	def __init__(self, init_data:dict, connection:object):
+		super().__init__()
+		self.init_data = init_data
 		self.connection = connection
-		self.url = unquote(url)
-
-	def start(self) -> str:
-		'''
-		Start will fire up the downloading
-		'''
-		protocol, url, host =self.RawData(self.url)
-		logg.debug(f'protocol: {protocol}, host: {host}')
-
-		check = self.check_multi(protocol, self.url, host)
-		logg.debug(f'Download check status: {check}')
-		if check[0] == "0":
-
-			# Data for process bar
-			# gg= bytes downloaded, size total size of file,
-			# when is bool vaule to start and stop the process bar
-			self.size = int(self.header["content-length"])
-
-			self.gg = 0 # download bytes
-			self.when = True
-
-			#get filename
-			name = self.getfilename()
-
-			logg.debug(f'Filename: {name}, Filesize: {self.size}')
-
-			# Create ranges for downloading chunks in parts
-			ranges = self.get_range(int(self.header["content-length"]),self.connection)
-
-			self.files = {}
-			threads = []
-			for n,m in enumerate(ranges):
-				req=self.gen_req(host,url,{"range":f"bytes={m}"})
-				threads.append(threading.Thread(target=self.down, args=(protocol, host, req, m, str(n))))
-				# break
-
-			if self.status:threading.Thread(target=self.run).start()
-			for n in threads:n.start()
-			for n in threads:n.join()
-			
-			# End of process bar 
-			self.when = False
-
-			with open(name,"wb") as f:
-				for n in range(len(self.files)):
-					ff=self.files[n]
-					ff.seek(0)
-					f.write(ff.read())
-					ff.close()
-			f.close()
-
-			# end of procedd bar with 100%
-			p=int(int(self.gg)*50/int(self.size))
-			if self.status:print("Process: [{}] {}% Complete {:<10}".format("█"*p+"-"*(50-p), p*100/50,"0.0 Kb/s"))
-			logg.debug(f"Downloading conpleted 100% Filename{name}")
-
-			# print(name)
-			return name
-
-		elif check[0] == "1" :
-			name = self.getfilename()
-			req=self.gen_req(host,url)
-			sock=self.connect(protocol,host)
-			sock.sendall(req)
-			data=sock.recv(self.chunk)
-			header,image=self.hparsec(data)
-			f = open(name,"wb")
-			f.write(image)
-
-
-			# gg= bytes downloaded, size total size of file,
-			# when is bool vaule to start and stop the process bar
-			self.gg = len(image)
-			self.size = int(header["content-length"]) 
-			self.when = True
-
-			#Start The process bar if status TRUE
-			if self.status:threading.Thread(target=self.run).start()
-
-			logg.debug(f'Filename: {name}, Filesize: {self.size}')
-
-			while True:
-				try:
-					data = sock.recv(self.chunk)
-					if not data:break
-					f.write(data)
-					self.gg += len(data)
-				except socket.timeout:
-					break
-
-			#End od process bar
-			self.when = False
-
-			# end of procedd bar with 100%
-			p=int(int(self.gg)*50/int(self.size))
-			if self.status:print("Process: [{}] {}% Complete {:<10}".format("█"*p+"-"*(50-p), p*100/50,"0.0 Kb/s"))
-
-			# Return the file name
-			return name
-
-		elif check[0] == "2" :
-			name = self.getfilename()
-			req=self.gen_req(host,url)
-			sock=self.connect(protocol,host)
-			sock.sendall(req)
-			data=sock.recv(self.chunk)
-			header,image=self.hparsec(data)
-			f = open(name,"wb")
-			f.write(image)
-
-			if self.status:
-				logg.debug("We can't run status bar for this, No content-length found")
-
-			logg.debug(f'Filename: {name}, Filesize: Unknown')
-
-			while True:
-				try:
-					data = sock.recv(self.chunk)
-					if not data:break
-					f.write(data)
-				except socket.timeout:
-					break
-					
-			# Return the file name
-			return name
-		else:
-			return check[1]
-
-	def create_user_dir(self,foldername:str) -> str:
-		if not os.path.exists(foldername):
-			os.makedirs(foldername)
-		return foldername
-
-	def rangediff(self,s):
-		c,b = s.split("-")
-		c,b = int(c),int(b)
-		if self.size == b:
-			diff = b-c
-			return diff
-		else:
-			diff = b-c
-			return diff+1
-
-	def down(self, protocol:str, host:str, req:bytes, range:list, id:str="") -> None:
-		f = tempfile.TemporaryFile()
-		if id is not "":self.files[int(id)] = f
-		sock=self.connect(protocol,host)
-		diff = self.rangediff(range)
-		sock.settimeout(5)
-		sock.sendall(req)
-		data=sock.recv(self.chunk)
-		header,image=self.hparsec(data)
-		self.gg += len(image)
-		local_gg = 0
-		local_gg =+len(image)
-		f.write(image)
-		while True:
-			try:
-				data = sock.recv(self.chunk)
-				if not data:break
-				f.write(data)
-				self.gg += len(data)
-				local_gg =+len(data)
-				if local_gg >= diff: break
-			except socket.timeout:
-				break
-
-		f.seek(0)
+		self.file = tempfile.NamedTemporaryFile(delete=False)
 
 	def run(self):
-		self.temp1=0
-		while self.when:
-			speed=(self.gg-self.temp1)/1024
-			p=int(int(self.gg)*50/int(self.size))
-			print("Process: [{}] {}% Complete {:<8}Kb/s".format("█"*p+"-"*(50-p), p*100/50,"{:.2f}".format(speed)),end="\r")
-			self.temp1=self.gg
-			sleep(1)
+		data = self.connection.recv(MAX_SOCKET_CHUNK_SIZE)
+		res = Response(data)
 
-	def get_range(self, length:int, conn:int) -> List[str]:
-		av = int(length/conn)
-		r=[]
-		start = 0
-		r.append(f'{start}-{start+av}')
-		start+=av
-		if conn>1:
-			for n in range(conn-2):
-				r.append(f'{start+1}-{start+av}')
-				start+=av
-			r.append(f'{start+1}-{length}')
-		return r
+		while True:
+			data = self.connection.recv(MAX_SOCKET_CHUNK_SIZE)
+			if not data:
+				break
 
-	def getfilename(self) -> str:
-		finalname = ""
-		name = ""
-		if self.dire:
-			if not self.name:
-				if self.tmpname:
-					finalname = f'{self.dire}/{self.tmpname}'
-				else:
-					dd=self.header["content-type"].split("/")[1].split("+")[0]
-					finalname = f'{self.dire}/{int(time())}.{dd}'
-			else:
-				finalname = f'{self.dire}/{self.name}'
-		else:
-			if not self.name:
-				if self.tmpname:
-					finalname = f'{self.tmpname}'
-				else:
-					dd=self.header["content-type"].split("/")[1].split("+")[0]
-					finalname = f'{int(time())}.{dd}'
-			else:
-				finalname = f'{self.name}'
+			self.init_data["bytes_recv"] += len(data)
+			self.file.write(data)
 
-		for n in finalname:
-			if n not in '\\ /:*?"<>|':
-				name+=n
-				
-		return name
+		if hasattr(self.connection, "pending"):
+			left_bytes = self.connection.pending()
+			data = self.connection.recv(left_bytes)
+			self.init_data["bytes_recv"] += left_bytes
+			self.file.write(data)
 
-	def check_multi(self, protocol:str, url:str, host:str) -> Tuple:
-		req=self.gen_req(host,url)
-		sock=self.connect(protocol,host)
-		sock.sendall(req)
-		data=sock.recv(self.chunk)
-		self.header,image=self.hparsec(data)
-		if "content-length" in self.header.keys():
-			if int(self.header["status"]) is not 200:
-				try:
-					sock.close()
-					name = self._Download(self.header["location"], dire=self.dire, name=self.name, status=self.status, chunk=self.chunk, connection=self.connection)
-					return "2",name
-				except Exception as err:
-					print(f"Error: {err}")
-					print("We cant download from this URL Contact Admin with URL OR can't save with this file name")
-					sock.close()
-					sys.exit(1)
+		self.file.seek(0)
+		self.connection.close()
 
-		else: return "2",""
+	def __del__(self):
+		self.file.close()
+		os.unlink(self.file.name)
 
-		if "accept-ranges" in self.header.keys():
-			return "0",""
-		return "1",""
-	
-	@classmethod
-	def _Download(cls,*args,**kwargs):
-		return cls(*args,**kwargs).start()
+class ProcessBar(threading.Thread):
+	def __init__(self, init_data:dict):
+		super().__init__()
+		self.init_data = init_data
+		self.len = 50
+		self.prefix, self.block, self.suffix = ("[", "■", "]")
+		self.empty_space = " "
+		self.loading = cycle("\\/-")
+
+		self.time_interval = 0.10
+
+	def run(self):
+		block_len = 0
+		last_bytes = 0
+		while self.len != block_len:
+			print("\r", end="")
+			block_len = (self.init_data["bytes_recv"]*self.len)//self.init_data["length"]
+			download_bytes_in_second = ((self.init_data["bytes_recv"]-last_bytes) * (1//self.time_interval))
+			eta = f"{self.init_data['length']//download_bytes_in_second}s"
+
+			eta_str = f" {next(self.loading)} ETA {eta:<20}"
+			download_bytes_in_second_str = f"{download_bytes_in_second}bytes/second"
+			percentage = f" {next(self.loading)} [{block_len*(100//self.len)}/100]"
+
+			print("downloading "+self.prefix + self.block * block_len + self.empty_space * (self.len-block_len)  + self.suffix + percentage, end="")
+
+			last_bytes = self.init_data["bytes_recv"]
+			time.sleep(self.time_interval)
+
+		print("")
+
+class Download:
+	def __init__(self, url:str, connection:int=None, filename:str=None, headers:dict=dict()):
+		self.url = url
+		self.url_obj = Url(self.url)
+
+		self.filename = filename
+		self.connection = connection
+
+		self.data = dict(bytes_recv=0, url=self.url_obj, connection=connection, filename=filename)
+
+		self.master_payload = self.make_payload(headers=headers)
+
+	def make_payload(self, bytes_range:list=None, headers:dict=None):
+		headers = headers or {
+			"user-agent": "MayankFawkes/Bot"
+		}
+		headers.update({"connection": "close"})
+
+		payload = f'GET {self.url_obj.path} HTTP/1.1\r\nhost: {self.url_obj.host}\r\n'
+
+		if bytes_range:
+			bytes_range = list(map(str, bytes_range))
+			payload += f"range: bytes={'-'.join(bytes_range)}\r\n"
+
+		for key, value in headers.items():
+			payload += f"{key}: {value}\r\n"
+
+		payload += "\r\n"
+
+		return payload.encode()
+
+	def create_connection(self):
+		sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		sock.connect((self.url_obj.host, self.url_obj.port))
+		if self.url_obj.scheme == "https":
+			ssl_cxt = ssl.create_default_context()
+			sock = ssl_cxt.wrap_socket(sock, server_hostname=self.url_obj.host)
+
+		return sock
+
+	def proces(self):
+		sock = self.create_connection()
+		sock.send(self.master_payload)
+		rawres = sock.recv(MAX_SOCKET_CHUNK_SIZE)
+
+		res = Response(rawres)
+
+		self.data["length"] = res.length
+
+		if res.status.startswith("3"):
+			down = Download(url=res.headers["location"])
+			down.proces()
+			return
+
+		connection = self.predict_conn(res)
+		bytes_ranges = self.get_range(length=res.length, connection=connection)
+
+		workers = []
+
+		for bytes_range in bytes_ranges:
+			payload = self.make_payload(bytes_range=bytes_range)
+
+			worker_sock = self.create_connection()
+			worker_sock.send(payload)
+
+			w = Worker(init_data=self.data, connection=worker_sock)
+			w.start()
+
+			workers.append(w)
+
+		ProcessBar(init_data=self.data).start()
+
+		[worker.join() for worker in workers]
+
+		filename = self.get_filename(response=res)
+
+		with open(filename, "wb") as fp:
+			for worker in workers:
+				while True:
+					chunk = worker.file.read(MAX_IO_CHUNK_SIZE)
+					if not chunk:
+						break
+
+					fp.write(chunk)
+
+		# print(self.data["bytes_recv"])
+
+	def get_filename(self, response:object):
+		if self.filename:
+			return self.filename
+
+		if filename:=response.filename:
+			return filename
+
+		return unquote(self.url.split("/")[-1].split("?")[0])
 
 
-	def connect(self, protocol:str, host:str) -> socket.socket:
-		s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-		if protocol=="https":
-			s.connect((host, 443))
-			s = ssl.create_default_context().wrap_socket(s, server_hostname=host)
-		elif protocol=="http":
-			s.connect((host, 80))
-		else:
-			print("we only support HTTP and HTTPS")
-			s.close()
-			sys.exit(1)
-		return s
+	def get_range(self, length:int, connection:int):
+		steps = length//connection
+		ranges = []
+		for n in range(0, length, steps):
+			ranges.append([n, n+steps-1])
 
-	def hparsec(self,data:bytes) -> Tuple[Dict[str,str], bytes]:
-		header =  data.split(b'\r\n\r\n')[0]
-		store =  data[len(header)+4:]
-		html = data[len(header)+4:]
-		header=header.decode().split("\r\n")
+		return ranges
 
-		out={}
-		for n in header[1:]:
-			temp=n.split(":")
-			value=""
-			for n in temp[1:]:
-				value+=n+":"
-			out[temp[0].lower()]=value[1:len(value)-1]
-		out["status"]=header[0].split()[1]
+	def predict_conn(self, response:object):
+		if self.connection:
+			if self.connection > MANUAL_MAX_CONNECTION:
+				self.connection = MANUAL_MAX_CONNECTION
 
-		return out,store
+		if not response.allow_multi_connection:
+			return self.connection or 1
 
-	def gen_req(self, host:str, url:str, header:Dict[str,str] = {}) -> bytes:
-		req=f'GET {url} HTTP/1.1\r\nhost: {host}\r\nuser-agent: MayankFawkes/bot\r\nconnection: close\r\n'
-		for n, m in header.items():
-			req += f'{n}:{m}\r\n'
-		req+="\r\n"
-		return req.encode()
+		if self.connection:
+			return self.connection
 
-	def RawData(self,web_url:str)-> Tuple[str, str, str]:
-		o=urlparse(web_url)
-		host=o.netloc
-		protocol=o.scheme
-		if o.query:
-			url=(o.path+"?"+o.query)
-			self.tmpname = ""
-		else:
-			url=o.path
-			self.tmpname = o.path.split("/")[-1]
-		return protocol, url, host
+		conn = response.length // CONNECTION_PER_BYTE
+
+		if conn > MAX_CONNECTION:
+			return MAX_CONNECTION
+		
+		if not conn:
+			return 1
+
+		return conn
+		
 
 if __name__ == '__main__':
-	link=input("Enter Url -->")
-	dd=Download(link ,name = "", status = True, connection = 8, chunk = 5120).start()
-	print(dd)
+	link = "https://github.com/docker/compose/releases/download/v2.6.1/docker-compose-linux-x86_64"
+	down = Download(url=link)
+	down.proces()
+
