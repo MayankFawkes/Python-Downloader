@@ -21,6 +21,8 @@ CONNECTION_PER_BYTE = 1024 * 1024 * 5
 class Response:
 	def __init__(self, raw:bytes):
 		header_body = raw.split(b"\r\n\r\n")
+		
+		self.body = b""
 
 		if len(header_body) == 1:
 			self.raw_header = header_body[0]
@@ -102,6 +104,10 @@ class Worker(threading.Thread):
 		data = self.connection.recv(MAX_SOCKET_CHUNK_SIZE)
 		res = Response(data)
 
+		if res.body:
+			self.file.write(res.body)
+			self.init_data["bytes_recv"] += len(res.body)
+
 		while True:
 			data = self.connection.recv(MAX_SOCKET_CHUNK_SIZE)
 			if not data:
@@ -134,35 +140,51 @@ class ProcessBar(threading.Thread):
 
 		self.time_interval = 0.10
 
+		self._block_len = 0
+		self._last_bytes = 0
+
+		self.processbar = self.init_data.get("processbar")
+
 	def run(self):
 		block_len = 0
 		last_bytes = 0
-		while self.len != block_len:
-			print("\r", end="")
-			block_len = (self.init_data["bytes_recv"]*self.len)//self.init_data["length"]
-			download_bytes_in_second = ((self.init_data["bytes_recv"]-last_bytes) * (1//self.time_interval))
-			eta = f"{self.init_data['length']//download_bytes_in_second}s"
+		while self.len != self._block_len:
 
-			eta_str = f" {next(self.loading)} ETA {eta:<20}"
-			download_bytes_in_second_str = f"{download_bytes_in_second}bytes/second"
-			percentage = f" {next(self.loading)} [{block_len*(100//self.len)}/100]"
+			self._block_len = (self.init_data["bytes_recv"]*self.len)//self.init_data["length"]
 
-			print("downloading "+self.prefix + self.block * block_len + self.empty_space * (self.len-block_len)  + self.suffix + percentage, end="")
+			download_bytes_in_second = ((self.init_data["bytes_recv"]-self._last_bytes) * (1//self.time_interval))
+			self.download_bytes_in_second = download_bytes_in_second if download_bytes_in_second else 1
+			self.download_bytes_in_second_str = f"{download_bytes_in_second}bytes/second"
+			
+			self.eta = f"{self.init_data['length']//self.download_bytes_in_second}s"
+			self.eta_str = f" {next(self.loading)} ETA {self.eta:<20}"
+
+			self.percentage = self._block_len*(100//self.len)
+
+			animated_suff = f" {next(self.loading)} [{self.percentage}/100]"
+
+			if self.processbar:
+				print("\r", end="")
+				print("downloading "+self.prefix + self.block * self._block_len + self.empty_space * (self.len-self._block_len)  + self.suffix + animated_suff, end="")
 
 			last_bytes = self.init_data["bytes_recv"]
 			time.sleep(self.time_interval)
 
-		print("")
+		if self.processbar:
+			print("")
+
 
 class Download:
-	def __init__(self, url:str, connection:int=None, filename:str=None, headers:dict=dict()):
+	def __init__(self, url:str, connection:int=None, filename:str=None, headers:dict=dict(), processbar:bool=True):
 		self.url = url
 		self.url_obj = Url(self.url)
 
 		self.filename = filename
 		self.connection = connection
+		self.processbar = None
 
-		self.data = dict(bytes_recv=0, url=self.url_obj, connection=connection, filename=filename)
+		self.data = dict(bytes_recv=0, url=self.url_obj, connection=connection, 
+			filename=filename, processbar=processbar)
 
 		self.master_payload = self.make_payload(headers=headers)
 
@@ -181,7 +203,7 @@ class Download:
 		for key, value in headers.items():
 			payload += f"{key}: {value}\r\n"
 
-		payload += "\r\n"
+		payload += "\r\n" 
 
 		return payload.encode()
 
@@ -224,7 +246,8 @@ class Download:
 
 			workers.append(w)
 
-		ProcessBar(init_data=self.data).start()
+		self.processbar = ProcessBar(init_data=self.data)
+		self.processbar.start()
 
 		[worker.join() for worker in workers]
 
@@ -254,9 +277,11 @@ class Download:
 	def get_range(self, length:int, connection:int):
 		steps = length//connection
 		ranges = []
-		for n in range(0, length, steps):
-			ranges.append([n, n+steps-1])
-
+		for n in range(connection):
+			if connection == (n+1):
+				ranges.append([n*steps, length])
+				continue
+			ranges.append([n*steps, (n*steps)+steps-1])
 		return ranges
 
 	def predict_conn(self, response:object):
@@ -282,7 +307,7 @@ class Download:
 		
 
 if __name__ == '__main__':
-	link = "https://github.com/docker/compose/releases/download/v2.6.1/docker-compose-linux-x86_64"
+	link = input("Enter url -->")
 	down = Download(url=link)
 	down.proces()
 
